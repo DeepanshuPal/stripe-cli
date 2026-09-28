@@ -27,6 +27,7 @@ import (
 	"github.com/stripe/stripe-cli/pkg/cmd/resources"
 	"github.com/stripe/stripe-cli/pkg/cmdutil"
 	"github.com/stripe/stripe-cli/pkg/config"
+	"github.com/stripe/stripe-cli/pkg/errorcategory"
 	"github.com/stripe/stripe-cli/pkg/login"
 	"github.com/stripe/stripe-cli/pkg/plugins"
 	"github.com/stripe/stripe-cli/pkg/requests"
@@ -103,6 +104,10 @@ var rootCmd = &cobra.Command{
 		// both of those after InitConfig has already run.
 		Config.Profile.WarnIfLegacyProfileName()
 
+		if err := validateExplicitProjectContext(cmd, &Config.Profile, cmd.Flags().Changed("project-name")); err != nil {
+			return err
+		}
+
 		// if getting the config errors, don't fail running the command
 		merchant, _ := Config.Profile.GetAccountID()
 		telemetryMetadata := stripe.GetEventMetadata(cmd.Context())
@@ -130,6 +135,45 @@ var rootCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// validateExplicitProjectContext prevents an OAuth command from running against
+// the active account when a different, explicitly selected profile is known to
+// belong to another account. It does not change contexts or infer an account
+// from a profile without an account ID.
+func validateExplicitProjectContext(cmd *cobra.Command, profile *config.Profile, projectFlagChanged bool) error {
+	if profile.HasOverrideAPIKey() {
+		return nil
+	}
+	// Profile management and local commands do not use the active context for an
+	// API request. Login and switch must remain usable to fix a conflict.
+	top := cmd
+	for top.Parent() != nil && top.Parent().Parent() != nil {
+		top = top.Parent()
+	}
+	switch top.Name() {
+	case "login", "logout", "switch", "config", "version", "completion", "help", "whoami":
+		return nil
+	}
+	if !projectFlagChanged && os.Getenv("STRIPE_PROJECT_NAME") == "" {
+		return nil
+	}
+	uat, err := profile.GetUAT()
+	if err != nil || !strings.HasPrefix(uat, "oak_") {
+		return nil
+	}
+	active, err := config.GetActiveContext()
+	if err != nil || active == nil {
+		return nil
+	}
+	profileAccountID, err := profile.GetAccountID()
+	if err != nil || profileAccountID == "" || profileAccountID == active.AccountID {
+		return nil
+	}
+	return errorcategory.UserInputErrorf(
+		"project %q is for account %s, but the active context is %s; run 'stripe switch %s' to select it before retrying",
+		profile.ProfileName, profileAccountID, active.AccountID, profileAccountID,
+	)
 }
 
 func sendCommandInvocationEvent(ctx context.Context) {
