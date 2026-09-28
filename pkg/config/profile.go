@@ -952,6 +952,9 @@ func (p *Profile) PrintActiveContextBanner() {
 		if !strings.HasPrefix(uat, "oak_") {
 			return
 		}
+		if p.HasOverrideAPIKey() {
+			return
+		}
 		ac, _ := GetActiveContext()
 		if ac == nil {
 			return
@@ -961,7 +964,15 @@ func (p *Profile) PrintActiveContextBanner() {
 			mode = "live"
 		}
 		color := ansi.Color(os.Stderr)
-		fmt.Fprintf(os.Stderr, "%s Running in %s · %s (%s)\n", color.Faint("▸"), p.GetDisplayName(), mode, ac.AccountID)
+		// A requested profile can differ from the OAuth active context. Never
+		// pair the profile display name with another account's ID.
+		name := ac.AccountID
+		if profileAccountID, err := p.GetAccountID(); err == nil && profileAccountID == ac.AccountID {
+			if displayName := p.GetDisplayName(); displayName != "" {
+				name = displayName
+			}
+		}
+		fmt.Fprintf(os.Stderr, "%s Running in %s · %s (%s)\n", color.Faint("▸"), name, mode, ac.AccountID)
 	})
 }
 
